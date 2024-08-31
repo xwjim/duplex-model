@@ -58,11 +58,6 @@ async def echo(websocket, path):
             server_resp = ""
             for i in range(max_length if is_ordinary else int_out_token):
                 response, history = model.stream_generate()
-                # if response is None or response in ["<idle>", " <idle>", "</s>"] or "<idle>" in response or "</s>" in response:
-                #     model.generate_flag = False
-                #     break
-                print("----------------getup---------------")
-                print(response)
                 if "</s>" in response:
                     model.generate_flag = False
                     server_resp += response.split("</s>")[0]
