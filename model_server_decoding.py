@@ -1,31 +1,34 @@
 import asyncio
 import os
-
+from duplex_decoding import DuplexModel
 import torch
 import websockets
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import LlamaTokenizer
 
 model_dir = "minicpm-duplex"
 device = "cuda" # for linux server
 #device = "mps" for mac book
-tokenizer = LlamaTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True, torch_dtype=torch.bfloat16).to("cuda")
-model = model.eval()
+# tokenizer = LlamaTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+# model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True, torch_dtype=torch.bfloat16).to("cuda")
+model_path = "/mnt/afs/wxu/output/duplex/20240830114635/checkpoint-2000/" #"/mnt/afs/wxu/checkpoints/openbmb/MiniCPM-2B-sft-bf16/" #
+model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, device_map='cuda',trust_remote_code=True) # LlamaForCausalLM
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+model = DuplexModel(model, tokenizer)
+
 max_length = 512
 
 top_p = 0.8
 temperature = 0.8
 top_k = 0
-int_out_token = 15
+int_out_token = 2
 
 
 async def echo(websocket, path):
     is_ordinary = False
     async for message in websocket:
         message = message.strip()
-        print("-----"*4+"message"+"-----"*4)
-        print(message)
+
         if not message:
             continue
 
@@ -42,7 +45,6 @@ async def echo(websocket, path):
             model.reset_chat_history()
             is_ordinary = True
             continue
-        print('message',message)
         ret_code = model.stream_chat(tokenizer, message, max_length=max_length, top_p=top_p,
                           temperature=temperature, top_k=top_k)
                           
@@ -56,16 +58,19 @@ async def echo(websocket, path):
             server_resp = ""
             for i in range(max_length if is_ordinary else int_out_token):
                 response, history = model.stream_generate()
-                if response is None or response in ["<idle>", " <idle>", "</s>"] or "<idle>" in response or " <idle>" in response:
-                    if i < 6 and response == "</s>":
-                        model.generate_flag = False
+                # if response is None or response in ["<idle>", " <idle>", "</s>"] or "<idle>" in response or "</s>" in response:
+                #     model.generate_flag = False
+                #     break
+                print("----------------getup---------------")
+                print(response)
+                if "</s>" in response:
+                    model.generate_flag = False
+                    server_resp += response.split("</s>")[0]
                     break
-                
-                server_resp += response
+                else:  
+                    server_resp += response
 
-            server_resp = server_resp.replace(".", "\n")
-            print("-----"*4+"server_resp"+"-----"*4)
-            print(server_resp)
+            # server_resp = server_resp.replace(".", "\n")
             if server_resp and server_resp not in ['<idle>', "</s>", ' <idle>', ""]:
                 try:
                     await websocket.send(server_resp)

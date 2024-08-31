@@ -1140,7 +1140,7 @@ class MiniCPMForCausalLM(MiniCPMPreTrainedModel):
         self.is_length_limit = False
 
     def reset_chat_history(self):
-        save_file = "/data/duplex_logs/subject_duplex_%s.jsonl"%(time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime(time.time())))
+        save_file = "./data/duplex_logs/subject_duplex_%s.jsonl"%(time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime(time.time())))
         fw = jsonlines.open(save_file, "w")
         fw.write_all(self.history_all)
         fw.close()
