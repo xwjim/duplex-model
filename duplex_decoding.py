@@ -16,8 +16,17 @@ WAIT_FOR_INPUT=1
 GENERATION=2
 PARREL=3
 
-ENDFLAG="<SEP>"
+ENDFLAG="<1>"
+DROPFLAG="<2>"
 STOPFLAG="</s>"
+
+def location_special_token(tokenzier, source_tokens, target_str):
+    target_tokens = tokenzier(target_str)["input_ids"][1:]
+    N = len(target_tokens)
+    for i in range(0 , len(source_tokens)-N):
+        if source_tokens[i:i+N] == target_tokens:
+            return i
+    return -1
 
 def generate_with_kvcache(prefix : torch.Tensor, 
                             gamma : int, 
@@ -127,27 +136,40 @@ class DuplexModel():
             if input is not None:
                 new_input = torch.cat((input, self.tokenizer("<user>:"+asr_channel, return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
             else:
-                new_input = self.tokenizer("<user>: " + asr_channel, return_tensors='pt').to('cuda')['input_ids']
+                new_input = self.tokenizer("<user>:" + asr_channel, return_tensors='pt').to('cuda')['input_ids']
             self.status = WAIT_FOR_INPUT
             # output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self._past_key_values, self._prob_history,)
             output = new_input
 
         elif self.status == WAIT_FOR_INPUT:
+            # import pdb
+            # pdb.set_trace()
 
             if asr_channel is not None:
                 new_input = torch.cat((input, self.tokenizer(asr_channel, return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
                 output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self._past_key_values, self._prob_history,)
                 self.idle_cnt = 0
+            elif self._past_key_values is not None:
+                next_tok = self._prob_history[:,-1].argmax(dim=-1, keepdim=True)
+                new_input = torch.cat((input, next_tok),dim=-1)
+                output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma-1, self._model, self._past_key_values, self._prob_history,)
+                self.idle_cnt += 1
             else:
                 self.idle_cnt += 1
-                output = input
+                output, self._past_key_values, self._prob_history = generate_with_kvcache(input, gamma, self._model, self._past_key_values, self._prob_history,)
+                self.idle_cnt += 1
 
             if self.idle_cnt > 1: #ENDFLAG in self.tokenizer.decode(output[0,-gamma:]):
+                special_ind = location_special_token(self.tokenizer, output[0,-gamma:].tolist(), ENDFLAG)
+                back_num = gamma - special_ind - len(self.tokenizer(ENDFLAG)["input_ids"]) + 1
+                if back_num != 0 and self._past_key_values is not None:
+                    self.rollback(output.shape[1]-back_num)
+                    output = output[:, :-back_num]
                 self.status = GENERATION
-                new_input = torch.cat((output, self.tokenizer(" <assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
+                new_input = torch.cat((output, self.tokenizer("<assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
                 self.print_len = len(self.tokenizer.decode(new_input[0]))
                 output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self._past_key_values, self._prob_history,)
-            elif asr_channel is not None:
+            else:
                 self.rollback(output.shape[1]-gamma)
                 output = output[:, :-gamma]
 
@@ -172,19 +194,21 @@ class DuplexModel():
                 assert new_input.shape[1] != self.asr_idx.shape[1]
 
                 self.asr_idx, self.asr_key_values, self.asr_probs = generate_with_kvcache(new_input, gamma, self._model, self.asr_key_values, self.asr_probs,)
-                self.asr_idx = self.asr_idx[:, :-1]
 
                 self.idle_cnt = 0
             else:
                 self.idle_cnt += 1
 
             # ENDFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:]):
-            if self.idle_cnt > 2 and self.asr_idx is not None:
-                assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
+            if self.asr_idx is not None and ( self.idle_cnt > 2 or (self.idle_cnt == 1 and ENDFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:])) ):
+                # assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
+                special_ind = location_special_token(self.tokenizer, self.asr_idx[0,-gamma:].tolist(), ENDFLAG)
+                back_num = gamma - special_ind - len(self.tokenizer(ENDFLAG)["input_ids"]) + 1
+                if back_num != 0:
+                    self.asr_rollback(self.asr_idx.shape[1]-back_num)
                 
-                new_input = torch.cat((self.asr_idx, self.tokenizer("\n<assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
+                new_input = torch.cat((self.asr_idx, self.tokenizer("<assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
                 self.print_len = len(self.tokenizer.decode(new_input[0]))
-                new_input = torch.cat((self.asr_idx, self.tokenizer("\n", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
                 output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self.asr_key_values, self.asr_probs,)
 
                 self.asr_probs = None
@@ -193,8 +217,28 @@ class DuplexModel():
 
                 self.status = GENERATION
             elif self.asr_idx is not None and asr_channel != None:
-                self.asr_rollback(self.asr_idx.shape[1]-gamma)
-                assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
+                print("               double: "+self.tokenizer.decode(self.asr_idx[0][-gamma:]))
+                # self.asr_rollback(self.asr_idx.shape[1]-gamma)
+                # assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
+
+            if STOPFLAG in self.tokenizer.decode(output[0,-gamma:]):
+                if self.asr_idx is not None:
+                    self._past_key_values = self.asr_key_values
+                    self._prob_history = self.asr_probs
+                    output = self.asr_idx
+
+                    self.asr_probs = None
+                    self.asr_key_values = None
+                    self.asr_idx = None
+
+                    self.status = WAIT_FOR_INPUT
+                else:
+                    special_ind = location_special_token(self.tokenizer, output[0,-gamma:].tolist(), STOPFLAG)
+                    back_num = gamma - special_ind - len(self.tokenizer(STOPFLAG)["input_ids"]) + 1
+                    if back_num != 0:
+                        self.rollback(output.shape[1]-back_num)
+                        output = output[:, :-back_num]
+                    self.status = IDLE
 
         else:
             output = input
