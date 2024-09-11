@@ -128,6 +128,7 @@ class DuplexModel():
         self.print_len = 0
         self.is_length_limit = False
         self.logits_processor = LogitsProcessorList()
+        self.reset()
 
     @torch.no_grad()
     def generate(self, input : torch.Tensor, asr_channel: str, gamma : int) -> torch.Tensor:
@@ -200,22 +201,31 @@ class DuplexModel():
                 self.idle_cnt += 1
 
             # ENDFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:]):
-            if self.asr_idx is not None and ( self.idle_cnt > 2 or (self.idle_cnt == 1 and ENDFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:])) ):
-                # assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
-                special_ind = location_special_token(self.tokenizer, self.asr_idx[0,-gamma:].tolist(), ENDFLAG)
-                back_num = gamma - special_ind - len(self.tokenizer(ENDFLAG)["input_ids"]) + 1
-                if back_num != 0:
-                    self.asr_rollback(self.asr_idx.shape[1]-back_num)
-                
-                new_input = torch.cat((self.asr_idx, self.tokenizer("<assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
-                self.print_len = len(self.tokenizer.decode(new_input[0]))
-                output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self.asr_key_values, self.asr_probs,)
+            if self.asr_idx is not None :
 
-                self.asr_probs = None
-                self.asr_key_values = None
-                self.asr_idx = None
+                if self.idle_cnt > 2 or (self.idle_cnt > 0 and ENDFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:])):
+                    # assert self.asr_key_values[0][0].shape[2] == self.asr_idx.shape[1]
+                    special_ind = location_special_token(self.tokenizer, self.asr_idx[0,-gamma:].tolist(), ENDFLAG)
+                    back_num = gamma - special_ind - len(self.tokenizer(ENDFLAG)["input_ids"]) + 1
+                    if back_num != 0:
+                        self.asr_rollback(self.asr_idx.shape[1]-back_num)
+                    else:
+                        self.asr_rollback(self.asr_idx.shape[1]-gamma)
+                    
+                    new_input = torch.cat((self.asr_idx, self.tokenizer("<assistant>:", return_tensors='pt').to('cuda')['input_ids'][:,1:]),dim=-1)
+                    self.print_len = len(self.tokenizer.decode(new_input[0]))
+                    output, self._past_key_values, self._prob_history = generate_with_kvcache(new_input, gamma, self._model, self.asr_key_values, self.asr_probs,)
+                    print("               translation: "+self.tokenizer.decode(output[0][-gamma:]))
 
-                self.status = GENERATION
+                    self.asr_probs = None
+                    self.asr_key_values = None
+                    self.asr_idx = None
+
+                    self.status = GENERATION
+                elif (self.idle_cnt > 0 and DROPFLAG in self.tokenizer.decode(self.asr_idx[0,-gamma:])):
+                    self.asr_probs = None
+                    self.asr_key_values = None
+                    self.asr_idx = None
             elif self.asr_idx is not None and asr_channel != None:
                 print("               double: "+self.tokenizer.decode(self.asr_idx[0][-gamma:]))
                 # self.asr_rollback(self.asr_idx.shape[1]-gamma)

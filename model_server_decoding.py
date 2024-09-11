@@ -11,7 +11,7 @@ device = "cuda" # for linux server
 #device = "mps" for mac book
 # tokenizer = LlamaTokenizer.from_pretrained(model_dir, trust_remote_code=True)
 # model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True, torch_dtype=torch.bfloat16).to("cuda")
-model_path = "/mnt/afs/wxu/output/duplex/20240909203248/checkpoint-120" #"/mnt/afs/wxu/checkpoints/openbmb/MiniCPM-2B-sft-bf16/" #
+model_path = "/mnt/afs/wxu/output/duplex/20240911010723/checkpoint-800" #"/mnt/afs/wxu/checkpoints/openbmb/MiniCPM-2B-sft-bf16/" #
 model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, device_map='cuda',trust_remote_code=True) # LlamaForCausalLM
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 model = DuplexModel(model, tokenizer)
